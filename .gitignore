@@ -1,46 +1,9 @@
-# Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-build/
-dist/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Environment
 .env
-*.env.local
-.env.production
-
-# IDE
+*.log
+temp/
+downloads/
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
-
-# OS
 .DS_Store
-Thumbs.db
-ehthumbs.db
-
-# Logs
-*.log
-logs/
-
-# Downloads
-downloads/
-temp/
-*.txt
-!requirements.txt
-!runtime.txt
-!README.md
-
-# Koyeb
-.koyeb/
