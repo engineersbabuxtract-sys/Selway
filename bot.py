@@ -57,7 +57,7 @@ except ImportError:
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 # Bot Configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8845555323:AAHzKabLkl1h1LuSQh5cYUYyVxslGHmmte8")
 if not BOT_TOKEN:
     print("❌ ERROR: BOT_TOKEN environment variable is required!")
     sys.exit(1)
