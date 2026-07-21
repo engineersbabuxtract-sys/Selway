@@ -1,0 +1,33 @@
+name: selectionway-bot
+service:
+  type: web
+  runtime: python
+  runtime_version: "3.11"
+  build_command: pip install -r requirements.txt
+  run_command: python bot.py
+  ports:
+    - port: 8080
+      protocol: http
+  env:
+    - key: ENVIRONMENT
+      value: production
+    - key: PORT
+      value: "8080"
+    - key: LOG_LEVEL
+      value: INFO
+    - key: MAX_BATCHES_PER_PAGE
+      value: "8"
+    - key: MAX_FILE_SIZE_MB
+      value: "50"
+  regions:
+    - fra  # Frankfurt (closest to India)
+  scaling:
+    min: 1
+    max: 1
+  health_check:
+    path: /health
+    port: 8080
+    interval: 30s
+    timeout: 5s
+    grace_period: 10s
+    max_retries: 3
