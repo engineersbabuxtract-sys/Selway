@@ -3,6 +3,7 @@
 SelectionWay Telegram Bot - Koyeb Edition
 ==========================================
 Single-file Telegram bot for extracting SelectionWay batch content.
+Extracts ONLY HLS/m3u8 links in clean plain text format.
 Designed for direct Koyeb deployment without Docker.
 """
 
@@ -16,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 from collections import defaultdict
+import zipfile
 
 # Third-party imports
 import aiohttp
@@ -78,7 +80,7 @@ if not BOT_TOKEN:
 # ─── SelectionWay Extractor ──────────────────────────────────────────────────
 
 class SelectionWayExtractor:
-    """Async extractor for SelectionWay batches."""
+    """Async extractor for SelectionWay batches. Extracts ONLY HLS/m3u8 links."""
     
     def __init__(self):
         self.api_base = API_BASE
@@ -153,52 +155,86 @@ class SelectionWayExtractor:
         return []
     
     async def extract_batch(self, course_id: str, progress_callback=None) -> Dict:
-        """Extract all content from a batch."""
+        """
+        Extract HLS/m3u8 links in clean plain text format.
+        Generates TXT and JSON files.
+        """
         batch_info = await self.get_batch(course_id)
         if not batch_info:
             raise ValueError("Batch not found")
         
         batch_title = batch_info.get("title", "Unknown")
+        faculty_name = (batch_info.get('facultyDetails') or {}).get('name', 'Unknown')
         topics = await self.fetch_topics(course_id)
         
         if not topics:
             raise ValueError("No topics found")
         
-        # Prepare output
-        safe_title = re.sub(r'[<>:"/\\|?*]', '_', batch_title)[:80]
-        filename = f"{safe_title}.txt"
-        filepath = TEMP_DIR / filename
+        # Prepare filenames
+        safe_title = re.sub(r'[<>:"/\\|?*]', '_', batch_title)[:60]
+        txt_filename = f"{safe_title}.txt"
+        json_filename = f"{safe_title}.json"
+        zip_filename = f"{safe_title}.zip"
         
-        total_videos = 0
-        total_pdfs = 0
+        txt_filepath = TEMP_DIR / txt_filename
+        json_filepath = TEMP_DIR / json_filename
+        zip_filepath = TEMP_DIR / zip_filename
+        
+        # Counters
         total_hls = 0
         
-        with open(filepath, "w", encoding="utf-8") as f:
+        # JSON Structure
+        json_data = {
+            "course": {
+                "id": course_id,
+                "title": batch_title,
+                "faculty": faculty_name,
+                "type": "LIVE" if batch_info.get('isLive') else "Recorded",
+                "access": "FREE" if batch_info.get('isFree') else "PAID",
+                "extracted_at": datetime.now().isoformat(),
+                "total_topics": len(topics)
+            },
+            "topics": []
+        }
+        
+        # ─── Generate TXT File (Clean Plain Text) ────────────────────────
+        
+        with open(txt_filepath, "w", encoding="utf-8") as f:
             # Header
-            f.write(f"{'='*80}\n")
-            f.write(f"  BATCH: {batch_title}\n")
-            f.write(f"  Course ID: {course_id}\n")
+            f.write(f"{'='*70}\n")
+            f.write(f"  {batch_title}\n")
+            f.write(f"  Faculty: {faculty_name}\n")
             f.write(f"  Extracted: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"{'='*80}\n\n")
+            f.write(f"{'='*70}\n\n")
             
-            # Process topics
+            # ─── Process each topic ──────────────────────────────────
+            
             for t_idx, topic in enumerate(topics, 1):
                 topic_name = topic.get("topicName", f"Topic {t_idx}")
                 topic_id = topic.get("topicId", "")
                 
-                f.write(f"\n{'─'*80}\n")
-                f.write(f"  TOPIC {t_idx}/{len(topics)}: {topic_name}\n")
-                f.write(f"  Topic ID: {topic_id}\n")
-                f.write(f"{'─'*80}\n\n")
+                # Topic header
+                f.write(f"\n{'─'*70}\n")
+                f.write(f"  TOPIC {t_idx}: {topic_name}\n")
+                f.write(f"{'─'*70}\n\n")
+                
+                # JSON topic
+                json_topic = {
+                    "topic_name": topic_name,
+                    "topic_id": topic_id,
+                    "topic_number": t_idx,
+                    "subtopics": []
+                }
                 
                 # Get classes
                 classes = await self.fetch_classes(topic_id, course_id)
-                await asyncio.sleep(0.5)  # Rate limiting
+                await asyncio.sleep(0.5)
                 
                 if not classes:
                     f.write("  (No classes)\n\n")
+                    json_data["topics"].append(json_topic)
                     if progress_callback:
-                        await progress_callback(t_idx, len(topics), total_videos, total_pdfs)
+                        await progress_callback(t_idx, len(topics), total_hls)
                     continue
                 
                 # Group by subtopic
@@ -209,65 +245,74 @@ class SelectionWayExtractor:
                     groups[sub_name].append(cls)
                 
                 for sub_name, sub_classes in groups.items():
-                    f.write(f"    Subtopic: {sub_name}\n")
-                    f.write(f"    Classes: {len(sub_classes)}\n\n")
+                    # Subtopic header
+                    f.write(f"  [{sub_name}]\n")
+                    
+                    # JSON subtopic
+                    json_subtopic = {
+                        "subtopic_name": sub_name,
+                        "classes": []
+                    }
+                    
+                    has_hls = False
                     
                     for cls in sub_classes:
                         title = cls.get("title", "Untitled")
                         class_id = cls.get("classId", "N/A")
+                        hls_link = cls.get("class_link", "")
                         
-                        f.write(f"    ├── {title}\n")
-                        f.write(f"    │   ID: {class_id}\n")
-                        
-                        # HLS
-                        hls = cls.get("class_link", "")
-                        if hls:
-                            f.write(f"    │   [HLS] {hls}\n")
+                        if hls_link:
+                            has_hls = True
+                            # Clean format: Title : Link
+                            f.write(f"  {title} : {hls_link}\n")
+                            
+                            json_subtopic["classes"].append({
+                                "title": title,
+                                "class_id": class_id,
+                                "hls_link": hls_link
+                            })
                             total_hls += 1
-                        
-                        # MP4
-                        for mp4 in cls.get("mp4Recordings", []):
-                            url = mp4.get("url", "")
-                            if url:
-                                quality = mp4.get("quality", "?")
-                                size = mp4.get("size", 0) / (1024*1024)
-                                f.write(f"    │   [MP4 {quality}] ({size:.1f}MB) {url}\n")
-                                total_videos += 1
-                        
-                        # PDF
-                        for pdf in cls.get("classPdf", []):
-                            pdf_url = pdf.get("url", "")
-                            if pdf_url:
-                                f.write(f"    │   [PDF] {pdf.get('name', 'PDF')}: {pdf_url}\n")
-                                total_pdfs += 1
-                        
-                        f.write("    │\n")
                     
-                    f.write("    └──\n\n")
+                    if has_hls:
+                        json_topic["subtopics"].append(json_subtopic)
+                        f.write("\n")
+                
+                json_data["topics"].append(json_topic)
                 
                 if progress_callback:
-                    await progress_callback(t_idx, len(topics), total_videos, total_pdfs)
+                    await progress_callback(t_idx, len(topics), total_hls)
             
-            # Summary
-            total_links = total_hls + total_videos + total_pdfs
-            f.write(f"\n{'='*80}\n")
-            f.write(f"  SUMMARY\n")
-            f.write(f"{'='*80}\n")
-            f.write(f"  HLS Streams: {total_hls}\n")
-            f.write(f"  MP4 Videos : {total_videos}\n")
-            f.write(f"  PDFs       : {total_pdfs}\n")
-            f.write(f"  Total Links: {total_links}\n")
-            f.write(f"{'='*80}\n")
+            # Footer with credit
+            f.write(f"\n{'='*70}\n")
+            f.write(f"  Total Links: {total_hls}\n")
+            f.write(f"{'='*70}\n\n")
+            f.write(f"Extractor Bot Made By: http://t.me/anonymousrajput\n")
+        
+        # ─── Generate JSON File ──────────────────────────────────────────
+        
+        json_data["summary"] = {
+            "total_topics": len(topics),
+            "total_hls_links": total_hls,
+            "extractor_bot_by": "http://t.me/anonymousrajput"
+        }
+        
+        with open(json_filepath, "w", encoding="utf-8") as f:
+            json.dump(json_data, f, indent=2, ensure_ascii=False)
+        
+        # ─── Create ZIP file ─────────────────────────────────────────────
+        
+        with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(txt_filepath, txt_filename)
+            zipf.write(json_filepath, json_filename)
         
         return {
             "batch_title": batch_title,
             "course_id": course_id,
-            "file_path": str(filepath),
+            "txt_file": str(txt_filepath),
+            "json_file": str(json_filepath),
+            "zip_file": str(zip_filepath),
             "total_hls": total_hls,
-            "total_videos": total_videos,
-            "total_pdfs": total_pdfs,
-            "total_topics": len(topics),
-            "total_links": total_links
+            "total_topics": len(topics)
         }
     
     async def close(self):
@@ -318,7 +363,7 @@ def batches_keyboard(batches, page=0):
 
 def batch_detail_keyboard(batch_id):
     keyboard = [
-        [InlineKeyboardButton("📥 Extract Content", callback_data=f"extract_{batch_id}")],
+        [InlineKeyboardButton("📥 Extract HLS Links", callback_data=f"extract_{batch_id}")],
         [InlineKeyboardButton("📊 View Topics", callback_data=f"topics_{batch_id}")],
         [InlineKeyboardButton("⬅️ Back", callback_data="batches"),
          InlineKeyboardButton("🏠 Home", callback_data="home")]
@@ -342,8 +387,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     msg = (
-        f"🎓 *SelectionWay Batch Extractor*\n\n"
+        f"🎓 *SelectionWay HLS Extractor*\n\n"
         f"Welcome, {user.first_name}!\n\n"
+        f"*Extracts HLS/m3u8 Links Only*\n\n"
+        f"*Output Format:*\n"
+        f"```\nTitle : Link\n```\n\n"
         f"*Commands:*\n"
         f"📚 /batches - Browse batches\n"
         f"🔍 /search - Search batches\n"
@@ -362,16 +410,19 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "*📖 Help Guide*\n\n"
         "*How to extract:*\n"
-        "1. Use /batches to see courses\n"
+        "1. /batches - View courses\n"
         "2. Select a batch\n"
-        "3. Click 'Extract Content'\n"
-        "4. Download the text file\n\n"
+        "3. Click 'Extract HLS Links'\n"
+        "4. Download ZIP file\n\n"
+        "*Output:*\n"
+        "📄 Clean TXT: `Title : Link`\n"
+        "📋 JSON: Structured data\n\n"
         "*Commands:*\n"
         "/start - Main menu\n"
         "/batches - Browse batches\n"
         "/search <keyword> - Search\n"
         "/stats - Statistics\n"
-        "/cancel - Cancel operation"
+        "/cancel - Cancel"
     )
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -448,6 +499,8 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Bot is running\n"
         f"🌐 Environment: {'Koyeb' if APP_NAME else 'Local'}\n"
         f"📡 API: Connected\n"
+        f"📄 Format: Title : Link\n"
+        f"👤 By: @anonymousrajput"
     )
     await update.message.reply_text(stats_text, parse_mode='Markdown')
 
@@ -465,7 +518,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data == "home":
         await query.edit_message_text(
-            "🎓 *Main Menu*",
+            "🎓 *HLS Link Extractor*\n\n📄 Format: Title : Link",
             parse_mode='Markdown',
             reply_markup=main_menu_keyboard()
         )
@@ -483,13 +536,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "search_prompt":
         await query.message.reply_text(
-            "🔍 Send me a keyword to search.\nExample: `python course`",
+            "🔍 Send me a keyword to search.\nExample: `python`",
             parse_mode='Markdown'
         )
     
     elif data == "stats":
         await query.edit_message_text(
-            "*📊 Bot Status*\n\n✅ Running normally",
+            "*📊 Bot Status*\n\n✅ Running",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🏠 Home", callback_data="home")
@@ -498,7 +551,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "help":
         await query.edit_message_text(
-            "*📖 Help*\n\nUse /batches to browse\nSelect batch → Extract → Download",
+            "*📖 Help*\n\nExtracts HLS links.\nFormat: Title : Link",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🏠 Home", callback_data="home")
@@ -527,7 +580,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🆔 ID: `{batch_id}`\n"
                 f"📡 Type: {'🔴 LIVE' if batch.get('isLive') else '📺 Recorded'}\n"
                 f"🔐 Access: {'🆓 Free' if batch.get('isFree') else '💎 Paid'}\n"
-                f"👨‍🏫 Faculty: {faculty}"
+                f"👨‍🏫 Faculty: {faculty}\n\n"
+                f"📥 Output: Clean TXT + JSON"
             )
             await query.edit_message_text(
                 info,
@@ -559,25 +613,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start_extraction(update, context, batch_id)
 
 async def start_extraction(update: Update, context: ContextTypes.DEFAULT_TYPE, batch_id: str):
-    """Perform extraction."""
+    """Perform extraction and send ZIP file."""
     query = update.callback_query
     
     status_msg = await query.message.reply_text(
-        "🔄 *Starting extraction...*\n⏳ Please wait...",
+        "🔄 *Extracting HLS Links...*\n\n"
+        "📄 Generating files...\n"
+        "📦 Creating ZIP...\n\n"
+        "⏳ Please wait...",
         parse_mode='Markdown'
     )
     
     try:
-        async def progress(topics_done, total_topics, videos, pdfs):
+        async def progress(topics_done, total_topics, hls_count):
             pct = (topics_done / total_topics * 100) if total_topics > 0 else 0
             bar = "█" * int(pct/10) + "░" * (10 - int(pct/10))
             try:
                 await status_msg.edit_text(
                     f"🔄 *Extracting...*\n\n"
-                    f"[{bar}] {pct:.0f}%\n"
+                    f"📊 [{bar}] {pct:.0f}%\n"
                     f"📑 Topics: {topics_done}/{total_topics}\n"
-                    f"📹 Videos: {videos}\n"
-                    f"📄 PDFs: {pdfs}",
+                    f"🔗 Links: {hls_count}",
                     parse_mode='Markdown'
                 )
             except:
@@ -585,37 +641,60 @@ async def start_extraction(update: Update, context: ContextTypes.DEFAULT_TYPE, b
         
         result = await extractor.extract_batch(batch_id, progress)
         
-        # Send success message
-        total = result['total_links']
         await status_msg.edit_text(
-            f"✅ *Extraction Complete!*\n\n"
+            f"✅ *Done!*\n\n"
             f"📚 {result['batch_title']}\n"
-            f"📹 Videos: {result['total_videos']}\n"
-            f"📡 HLS: {result['total_hls']}\n"
-            f"📄 PDFs: {result['total_pdfs']}\n"
-            f"📎 Total: {total} links",
+            f"🔗 {result['total_hls']} HLS links\n"
+            f"📤 Sending ZIP...",
             parse_mode='Markdown'
         )
         
-        # Send file
-        filepath = result['file_path']
-        if Path(filepath).exists():
-            file_size = Path(filepath).stat().st_size
-            if file_size < 50 * 1024 * 1024:  # 50MB limit
+        # Send ZIP
+        zip_path = result['zip_file']
+        if Path(zip_path).exists():
+            file_size = Path(zip_path).stat().st_size
+            
+            if file_size < 50 * 1024 * 1024:
                 await query.message.reply_document(
-                    document=open(filepath, 'rb'),
-                    filename=Path(filepath).name,
-                    caption="📄 Extraction Results"
+                    document=open(zip_path, 'rb'),
+                    filename=Path(zip_path).name,
+                    caption=(
+                        f"📦 *Extraction Complete*\n\n"
+                        f"📚 {result['batch_title']}\n"
+                        f"🔗 {result['total_hls']} HLS links\n"
+                        f"📄 TXT + 📋 JSON"
+                    ),
+                    parse_mode='Markdown'
                 )
             else:
-                await query.message.reply_text(
-                    f"⚠️ File too large ({file_size/1024/1024:.1f}MB). Max 50MB."
-                )
+                await query.message.reply_text("⚠️ File too large. Sending separately...")
+                
+                if Path(result['txt_file']).exists():
+                    await query.message.reply_document(
+                        document=open(result['txt_file'], 'rb'),
+                        filename=Path(result['txt_file']).name,
+                        caption="📄 TXT File"
+                    )
+                
+                if Path(result['json_file']).exists():
+                    await query.message.reply_document(
+                        document=open(result['json_file'], 'rb'),
+                        filename=Path(result['json_file']).name,
+                        caption="📋 JSON File"
+                    )
+        
+        # Cleanup
+        for f in TEMP_DIR.glob("*"):
+            if f.stat().st_mtime < (datetime.now().timestamp() - 3600):
+                try:
+                    f.unlink()
+                except:
+                    pass
         
     except Exception as e:
         logger.error(f"Extraction failed: {e}")
         await status_msg.edit_text(
-            f"❌ *Extraction failed*\n`{str(e)[:200]}`",
+            f"❌ *Failed*\n`{str(e)[:200]}`",
             parse_mode='Markdown'
         )
 
@@ -625,16 +704,13 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Error: {context.error}", exc_info=context.error)
     try:
         if update and update.effective_message:
-            await update.effective_message.reply_text(
-                "❌ An error occurred. Please try again."
-            )
+            await update.effective_message.reply_text("❌ An error occurred. Try again.")
     except:
         pass
 
-# ─── Web Server for Koyeb ───────────────────────────────────────────────────
+# ─── Web Server ──────────────────────────────────────────────────────────────
 
 async def health_check(request):
-    """Health check endpoint for Koyeb."""
     return web.Response(
         text=json.dumps({
             "status": "healthy",
@@ -646,7 +722,6 @@ async def health_check(request):
     )
 
 async def create_web_app():
-    """Create aiohttp web app for health checks."""
     app = web.Application()
     app.router.add_get("/", health_check)
     app.router.add_get("/health", health_check)
@@ -655,7 +730,6 @@ async def create_web_app():
 # ─── Application Setup ───────────────────────────────────────────────────────
 
 def create_bot_app():
-    """Create and configure the bot application."""
     request = HTTPXRequest(
         connection_pool_size=8,
         connect_timeout=10.0,
@@ -668,17 +742,11 @@ def create_bot_app():
         .request(request) \
         .defaults(Defaults(parse_mode='Markdown'))
     
-    # Use updater for polling, None for webhook
-    if not WEBHOOK_URL:
-        # Local development - use polling
-        pass
-    else:
-        # Production - use webhook
+    if WEBHOOK_URL:
         builder.updater(None)
     
     app = builder.build()
     
-    # Add handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("batches", batches_cmd))
@@ -693,27 +761,24 @@ def create_bot_app():
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 async def main():
-    """Main entry point."""
     print("""
 ╔══════════════════════════════════════╗
-║  SelectionWay Telegram Bot           ║
-║  Koyeb Edition v2.0                  ║
+║  SelectionWay HLS Extractor          ║
+║  Format: Title : Link                ║
+║  By: @anonymousrajput                ║
 ╚══════════════════════════════════════╝
     """)
     
     print(f"🔧 Environment: {'Koyeb' if APP_NAME else 'Local'}")
     print(f"🤖 Bot Token: {'✓ Set' if BOT_TOKEN else '✗ Missing'}")
     print(f"📡 API: {API_BASE}")
-    print(f"🌐 Webhook: {WEBHOOK_URL or 'Using polling'}")
+    print(f"🌐 Webhook: {WEBHOOK_URL or 'Polling'}")
     
-    # Create bot application
     bot_app = create_bot_app()
     
     if WEBHOOK_URL:
-        # Production mode with webhook
-        print(f"🚀 Starting in WEBHOOK mode on port {PORT}")
+        print(f"🚀 Webhook mode on port {PORT}")
         
-        # Setup webhook
         webhook_path = f"/webhook/{BOT_TOKEN}"
         webhook_url = f"{WEBHOOK_URL.rstrip('/')}{webhook_path}"
         
@@ -722,54 +787,44 @@ async def main():
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True
         )
-        print(f"✅ Webhook set: {webhook_url}")
+        print(f"✅ Webhook: {webhook_url}")
         
-        # Setup commands
         commands = [
-            BotCommand("start", "Start the bot"),
-            BotCommand("batches", "Browse batches"),
-            BotCommand("search", "Search batches"),
-            BotCommand("stats", "View stats"),
-            BotCommand("help", "Help guide"),
-            BotCommand("cancel", "Cancel operation"),
+            BotCommand("start", "Start"),
+            BotCommand("batches", "Browse"),
+            BotCommand("search", "Search"),
+            BotCommand("stats", "Stats"),
+            BotCommand("help", "Help"),
+            BotCommand("cancel", "Cancel"),
         ]
         await bot_app.bot.set_my_commands(commands)
         
-        # Create web server
         web_app = await create_web_app()
         
-        # Add webhook route
         async def webhook_handler(request):
-            """Handle incoming webhook updates."""
             if request.method == "POST":
                 data = await request.json()
-                await bot_app.update_queue.put(
-                    Update.de_json(data, bot_app.bot)
-                )
+                await bot_app.update_queue.put(Update.de_json(data, bot_app.bot))
                 return web.Response(status=200)
             return web.Response(status=405)
         
         web_app.router.add_post(webhook_path, webhook_handler)
         
-        # Initialize and start bot
         await bot_app.initialize()
         await bot_app.start()
         
-        # Start web server
         runner = web.AppRunner(web_app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', PORT)
         await site.start()
         
-        print(f"🌐 Health check: http://0.0.0.0:{PORT}/health")
-        print("✅ Bot is ready!")
+        print(f"🌐 Health: http://0.0.0.0:{PORT}/health")
+        print("✅ Ready!")
         
-        # Keep running
         try:
             while True:
                 await asyncio.sleep(3600)
-                # Periodic cleanup
-                for f in TEMP_DIR.glob("*.txt"):
+                for f in TEMP_DIR.glob("*"):
                     if f.stat().st_mtime < (datetime.now().timestamp() - 86400):
                         f.unlink()
         except asyncio.CancelledError:
@@ -781,38 +836,34 @@ async def main():
             await extractor.close()
     
     else:
-        # Development mode with polling
-        print("🚀 Starting in POLLING mode")
+        print("🚀 Polling mode")
         
         await bot_app.initialize()
         await bot_app.start()
         
-        # Setup commands
         commands = [
-            BotCommand("start", "Start the bot"),
-            BotCommand("batches", "Browse batches"),
-            BotCommand("search", "Search batches"),
-            BotCommand("stats", "View stats"),
-            BotCommand("help", "Help guide"),
-            BotCommand("cancel", "Cancel operation"),
+            BotCommand("start", "Start"),
+            BotCommand("batches", "Browse"),
+            BotCommand("search", "Search"),
+            BotCommand("stats", "Stats"),
+            BotCommand("help", "Help"),
+            BotCommand("cancel", "Cancel"),
         ]
         await bot_app.bot.set_my_commands(commands)
         
-        # Start polling
         await bot_app.updater.start_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True
         )
         
-        # Also start health check server
         web_app = await create_web_app()
         runner = web.AppRunner(web_app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', PORT)
         await site.start()
         
-        print(f"🌐 Health check: http://localhost:{PORT}/health")
-        print("✅ Bot is ready!")
+        print(f"🌐 Health: http://localhost:{PORT}/health")
+        print("✅ Ready!")
         
         try:
             while True:
@@ -830,7 +881,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n👋 Bot stopped")
+        print("\n👋 Stopped")
     except Exception as e:
-        print(f"\n❌ Fatal error: {e}")
+        print(f"\n❌ Error: {e}")
         sys.exit(1)
