@@ -8,17 +8,15 @@ env/
 venv/
 ENV/
 build/
-develop-eggs/
 dist/
-downloads/
-temp/
 *.egg-info/
 .installed.cfg
 *.egg
 
-# Environment files
+# Environment
 .env
 *.env.local
+.env.production
 
 # IDE
 .vscode/
@@ -30,6 +28,7 @@ temp/
 # OS
 .DS_Store
 Thumbs.db
+ehthumbs.db
 
 # Logs
 *.log
@@ -37,6 +36,11 @@ logs/
 
 # Downloads
 downloads/
+temp/
 *.txt
 !requirements.txt
+!runtime.txt
 !README.md
+
+# Koyeb
+.koyeb/
