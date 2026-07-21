@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ─── Bot Configuration ─────────────────────────────────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8845555323:AAHzKabLkl1h1LuSQh5cYUYyVxslGHmmte8")
 
 # ─── API Configuration ─────────────────────────────────────────────────────
 API_BASE = os.getenv("API_BASE", "https://gdgoenkaratia.com/api")
