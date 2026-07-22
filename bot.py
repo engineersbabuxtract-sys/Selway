@@ -3,7 +3,7 @@
 SelectionWay Telegram Bot - Koyeb Edition
 ==========================================
 Single-file Telegram bot for extracting SelectionWay batch content.
-Extracts ONLY HLS/m3u8 links in clean plain text format.
+Extracts HLS/m3u8 AND PDF links in clean plain text format.
 Designed for direct Koyeb deployment without Docker.
 """
 
@@ -80,7 +80,7 @@ if not BOT_TOKEN:
 # ─── SelectionWay Extractor ──────────────────────────────────────────────────
 
 class SelectionWayExtractor:
-    """Async extractor for SelectionWay batches. Extracts ONLY HLS/m3u8 links."""
+    """Async extractor for SelectionWay batches. Extracts HLS + PDF links."""
     
     def __init__(self):
         self.api_base = API_BASE
@@ -156,7 +156,7 @@ class SelectionWayExtractor:
     
     async def extract_batch(self, course_id: str, progress_callback=None) -> Dict:
         """
-        Extract HLS/m3u8 links in clean plain text format.
+        Extract HLS/m3u8 AND PDF links in clean plain text format.
         Generates TXT and JSON files.
         """
         batch_info = await self.get_batch(course_id)
@@ -182,6 +182,7 @@ class SelectionWayExtractor:
         
         # Counters
         total_hls = 0
+        total_pdfs = 0
         
         # JSON Structure
         json_data = {
@@ -234,7 +235,7 @@ class SelectionWayExtractor:
                     f.write("  (No classes)\n\n")
                     json_data["topics"].append(json_topic)
                     if progress_callback:
-                        await progress_callback(t_idx, len(topics), total_hls)
+                        await progress_callback(t_idx, len(topics), total_hls, total_pdfs)
                     continue
                 
                 # Group by subtopic
@@ -254,37 +255,60 @@ class SelectionWayExtractor:
                         "classes": []
                     }
                     
-                    has_hls = False
+                    has_content = False
                     
                     for cls in sub_classes:
                         title = cls.get("title", "Untitled")
                         class_id = cls.get("classId", "N/A")
-                        hls_link = cls.get("class_link", "")
                         
+                        # JSON class
+                        json_class = {
+                            "title": title,
+                            "class_id": class_id,
+                            "hls_links": [],
+                            "pdf_links": []
+                        }
+                        
+                        # HLS Link
+                        hls_link = cls.get("class_link", "")
                         if hls_link:
-                            has_hls = True
-                            # Clean format: Title : Link
+                            has_content = True
                             f.write(f"  {title} : {hls_link}\n")
-                            
-                            json_subtopic["classes"].append({
-                                "title": title,
-                                "class_id": class_id,
-                                "hls_link": hls_link
-                            })
+                            json_class["hls_links"].append(hls_link)
                             total_hls += 1
+                        
+                        # PDF Links
+                        pdfs = cls.get("classPdf", [])
+                        if pdfs:
+                            for pdf in pdfs:
+                                pdf_url = pdf.get("url", "")
+                                pdf_name = pdf.get("name", "PDF")
+                                if pdf_url:
+                                    has_content = True
+                                    f.write(f"  {title} - {pdf_name} : {pdf_url}\n")
+                                    json_class["pdf_links"].append({
+                                        "name": pdf_name,
+                                        "url": pdf_url
+                                    })
+                                    total_pdfs += 1
+                        
+                        if json_class["hls_links"] or json_class["pdf_links"]:
+                            json_subtopic["classes"].append(json_class)
                     
-                    if has_hls:
+                    if has_content:
                         json_topic["subtopics"].append(json_subtopic)
                         f.write("\n")
                 
                 json_data["topics"].append(json_topic)
                 
                 if progress_callback:
-                    await progress_callback(t_idx, len(topics), total_hls)
+                    await progress_callback(t_idx, len(topics), total_hls, total_pdfs)
             
             # Footer with credit
             f.write(f"\n{'='*70}\n")
-            f.write(f"  Total Links: {total_hls}\n")
+            f.write(f"  HLS Links : {total_hls}\n")
+            f.write(f"  PDF Links : {total_pdfs}\n")
+            f.write(f"  Total     : {total_hls + total_pdfs}\n")
             f.write(f"{'='*70}\n\n")
             f.write(f"Extractor Bot Made By: http://t.me/anonymousrajput\n")
         
@@ -293,6 +317,8 @@ class SelectionWayExtractor:
         json_data["summary"] = {
             "total_topics": len(topics),
             "total_hls_links": total_hls,
+            "total_pdf_links": total_pdfs,
+            "total_links": total_hls + total_pdfs,
             "extractor_bot_by": "http://t.me/anonymousrajput"
         }
         
@@ -312,6 +338,8 @@ class SelectionWayExtractor:
             "json_file": str(json_filepath),
             "zip_file": str(zip_filepath),
             "total_hls": total_hls,
+            "total_pdfs": total_pdfs,
+            "total_links": total_hls + total_pdfs,
             "total_topics": len(topics)
         }
     
@@ -363,7 +391,7 @@ def batches_keyboard(batches, page=0):
 
 def batch_detail_keyboard(batch_id):
     keyboard = [
-        [InlineKeyboardButton("📥 Extract HLS Links", callback_data=f"extract_{batch_id}")],
+        [InlineKeyboardButton("📥 Extract Links (HLS + PDF)", callback_data=f"extract_{batch_id}")],
         [InlineKeyboardButton("📊 View Topics", callback_data=f"topics_{batch_id}")],
         [InlineKeyboardButton("⬅️ Back", callback_data="batches"),
          InlineKeyboardButton("🏠 Home", callback_data="home")]
@@ -387,11 +415,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     msg = (
-        f"🎓 *SelectionWay HLS Extractor*\n\n"
+        f"🎓 *SelectionWay Extractor*\n\n"
         f"Welcome, {user.first_name}!\n\n"
-        f"*Extracts HLS/m3u8 Links Only*\n\n"
+        f"*Extracts:*\n"
+        f"🔗 HLS/m3u8 Video Links\n"
+        f"📄 PDF Document Links\n\n"
         f"*Output Format:*\n"
-        f"```\nTitle : Link\n```\n\n"
+        f"```\nTitle : Link\nTitle - PDF Name : Link\n```\n\n"
         f"*Commands:*\n"
         f"📚 /batches - Browse batches\n"
         f"🔍 /search - Search batches\n"
@@ -412,11 +442,14 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*How to extract:*\n"
         "1. /batches - View courses\n"
         "2. Select a batch\n"
-        "3. Click 'Extract HLS Links'\n"
+        "3. Click 'Extract Links'\n"
         "4. Download ZIP file\n\n"
         "*Output:*\n"
-        "📄 Clean TXT: `Title : Link`\n"
+        "📄 TXT: `Title : Link`\n"
         "📋 JSON: Structured data\n\n"
+        "*Extracts:*\n"
+        "🔗 HLS/m3u8 Video Links\n"
+        "📄 PDF Document Links\n\n"
         "*Commands:*\n"
         "/start - Main menu\n"
         "/batches - Browse batches\n"
@@ -499,7 +532,7 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Bot is running\n"
         f"🌐 Environment: {'Koyeb' if APP_NAME else 'Local'}\n"
         f"📡 API: Connected\n"
-        f"📄 Format: Title : Link\n"
+        f"🔗 Extracts: HLS + PDF\n"
         f"👤 By: @anonymousrajput"
     )
     await update.message.reply_text(stats_text, parse_mode='Markdown')
@@ -518,7 +551,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data == "home":
         await query.edit_message_text(
-            "🎓 *HLS Link Extractor*\n\n📄 Format: Title : Link",
+            "🎓 *Extractor*\n\n🔗 HLS + 📄 PDF Links",
             parse_mode='Markdown',
             reply_markup=main_menu_keyboard()
         )
@@ -542,7 +575,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "stats":
         await query.edit_message_text(
-            "*📊 Bot Status*\n\n✅ Running",
+            "*📊 Bot Status*\n\n✅ Running\n🔗 HLS + 📄 PDF",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🏠 Home", callback_data="home")
@@ -551,7 +584,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "help":
         await query.edit_message_text(
-            "*📖 Help*\n\nExtracts HLS links.\nFormat: Title : Link",
+            "*📖 Help*\n\nExtracts HLS + PDF links.\nFormat: Title : Link",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🏠 Home", callback_data="home")
@@ -581,7 +614,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📡 Type: {'🔴 LIVE' if batch.get('isLive') else '📺 Recorded'}\n"
                 f"🔐 Access: {'🆓 Free' if batch.get('isFree') else '💎 Paid'}\n"
                 f"👨‍🏫 Faculty: {faculty}\n\n"
-                f"📥 Output: Clean TXT + JSON"
+                f"📥 Extracts: 🔗 HLS + 📄 PDF"
             )
             await query.edit_message_text(
                 info,
@@ -617,15 +650,16 @@ async def start_extraction(update: Update, context: ContextTypes.DEFAULT_TYPE, b
     query = update.callback_query
     
     status_msg = await query.message.reply_text(
-        "🔄 *Extracting HLS Links...*\n\n"
-        "📄 Generating files...\n"
-        "📦 Creating ZIP...\n\n"
+        "🔄 *Extracting Links...*\n\n"
+        "🔗 HLS Videos\n"
+        "📄 PDF Documents\n\n"
+        "📦 Creating ZIP...\n"
         "⏳ Please wait...",
         parse_mode='Markdown'
     )
     
     try:
-        async def progress(topics_done, total_topics, hls_count):
+        async def progress(topics_done, total_topics, hls_count, pdf_count):
             pct = (topics_done / total_topics * 100) if total_topics > 0 else 0
             bar = "█" * int(pct/10) + "░" * (10 - int(pct/10))
             try:
@@ -633,7 +667,8 @@ async def start_extraction(update: Update, context: ContextTypes.DEFAULT_TYPE, b
                     f"🔄 *Extracting...*\n\n"
                     f"📊 [{bar}] {pct:.0f}%\n"
                     f"📑 Topics: {topics_done}/{total_topics}\n"
-                    f"🔗 Links: {hls_count}",
+                    f"🔗 HLS: {hls_count}\n"
+                    f"📄 PDF: {pdf_count}",
                     parse_mode='Markdown'
                 )
             except:
@@ -644,7 +679,9 @@ async def start_extraction(update: Update, context: ContextTypes.DEFAULT_TYPE, b
         await status_msg.edit_text(
             f"✅ *Done!*\n\n"
             f"📚 {result['batch_title']}\n"
-            f"🔗 {result['total_hls']} HLS links\n"
+            f"🔗 HLS: {result['total_hls']}\n"
+            f"📄 PDF: {result['total_pdfs']}\n"
+            f"📎 Total: {result['total_links']}\n"
             f"📤 Sending ZIP...",
             parse_mode='Markdown'
         )
@@ -661,8 +698,10 @@ async def start_extraction(update: Update, context: ContextTypes.DEFAULT_TYPE, b
                     caption=(
                         f"📦 *Extraction Complete*\n\n"
                         f"📚 {result['batch_title']}\n"
-                        f"🔗 {result['total_hls']} HLS links\n"
-                        f"📄 TXT + 📋 JSON"
+                        f"🔗 {result['total_hls']} HLS Links\n"
+                        f"📄 {result['total_pdfs']} PDF Links\n"
+                        f"📎 {result['total_links']} Total\n\n"
+                        f"📄 TXT + 📋 JSON included"
                     ),
                     parse_mode='Markdown'
                 )
@@ -763,7 +802,8 @@ def create_bot_app():
 async def main():
     print("""
 ╔══════════════════════════════════════╗
-║  SelectionWay HLS Extractor          ║
+║  SelectionWay Extractor              ║
+║  HLS + PDF Links                     ║
 ║  Format: Title : Link                ║
 ║  By: @anonymousrajput                ║
 ╚══════════════════════════════════════╝
@@ -773,6 +813,7 @@ async def main():
     print(f"🤖 Bot Token: {'✓ Set' if BOT_TOKEN else '✗ Missing'}")
     print(f"📡 API: {API_BASE}")
     print(f"🌐 Webhook: {WEBHOOK_URL or 'Polling'}")
+    print(f"🔗 Extracts: HLS/m3u8 + PDF")
     
     bot_app = create_bot_app()
     
